@@ -14,13 +14,33 @@ async fn main() {
 
     let mut total_downloaded = 0u32;
     let mut total_failed = 0u32;
-    let mut page = 1;
+    let mut page = 1u32;
+    let mut consecutive_errors = 0u32;
+    let max_retries = 3u32;
 
     loop {
         println!("\n--- page {} ---", page);
 
-        match wallpapersclan::scrape_wallpapersclan(12, page).await {
+        let mut attempt = 0;
+        let result = loop {
+            attempt += 1;
+            match wallpapersclan::scrape_wallpapersclan(12, page).await {
+                Ok(items) => break Ok(items),
+                Err(e) => {
+                    if attempt >= max_retries {
+                        break Err(e);
+                    }
+                    let wait = attempt * 5;
+                    println!("[retry] page {} attempt {}/{} failed: {} — waiting {}s...", page, attempt, max_retries, e, wait);
+                    tokio::time::sleep(std::time::Duration::from_secs(wait as u64)).await;
+                }
+            }
+        };
+
+        match result {
             Ok(items) => {
+                consecutive_errors = 0; // reset on success
+
                 if items.is_empty() {
                     println!("no more items found! reached the end at page {}.", page);
                     break;
@@ -31,11 +51,7 @@ async fn main() {
 
                 for item in &items {
                     let slug = &item.id;
-                    let ext = if item.download_url.contains(".png") {
-                        "png"
-                    } else {
-                        "jpg"
-                    };
+                    let ext = if item.download_url.contains(".png") { "png" } else { "jpg" };
                     let filename = format!("{}.{}", slug, ext);
                     let filepath = output_dir.join(&filename);
 
@@ -53,39 +69,70 @@ async fn main() {
 
                     print!("  [dl] {} ... ", filename);
 
-                    match wallpapersclan::download_wallpaper(&item.download_url, &filepath).await {
-                        Ok(bytes) => {
-                            println!("ok ({} KB)", bytes / 1024);
-                            total_downloaded += 1;
-                            page_downloaded += 1;
-                        }
-                        Err(e) => {
-                            println!("FAILED: {}", e);
-                            total_failed += 1;
+                    // retry downloads too
+                    let mut dl_ok = false;
+                    for dl_attempt in 1..=max_retries {
+                        match wallpapersclan::download_wallpaper(&item.download_url, &filepath).await {
+                            Ok(bytes) => {
+                                println!("ok ({} KB)", bytes / 1024);
+                                total_downloaded += 1;
+                                page_downloaded += 1;
+                                dl_ok = true;
+                                break;
+                            }
+                            Err(e) => {
+                                if dl_attempt < max_retries {
+                                    print!("retry {}... ", dl_attempt + 1);
+                                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                } else {
+                                    println!("FAILED after {} attempts: {}", max_retries, e);
+                                    total_failed += 1;
+                                }
+                            }
                         }
                     }
                 }
-                // If we downloaded new things, update the README and push progressively to be failsafe
+
+                // update readme and progressively commit after every page with new downloads
                 if page_downloaded > 0 {
                     generate_readme(output_dir);
                     
-                    // Progressive commit in GitHub Actions to avoid timeout data loss
                     if std::env::var("GITHUB_ACTIONS").is_ok() {
                         println!("[ci] committing progress for page {}...", page);
                         let _ = std::process::Command::new("git").args(["add", "."]).status();
-                        let _ = std::process::Command::new("git").args(["commit", "-m", &format!("chore: archive page {} [skip ci]", page)]).status();
+                        let _ = std::process::Command::new("git")
+                            .args(["commit", "-m", &format!("chore: archive page {} ({} new) [skip ci]", page, page_downloaded)])
+                            .status();
                         let _ = std::process::Command::new("git").args(["push"]).status();
                     }
                 }
             }
             Err(e) => {
-                println!("error scraping page {}: {}", page, e);
-                println!("halting due to error.");
-                break;
+                consecutive_errors += 1;
+                println!("error scraping page {} after {} retries: {}", page, max_retries, e);
+                
+                if consecutive_errors >= 5 {
+                    println!("too many consecutive failures ({}), halting.", consecutive_errors);
+                    break;
+                }
+                
+                // skip this page and keep going
+                println!("skipping page {} and continuing...", page);
             }
         }
         
         page += 1;
+        
+        // small delay between pages to be polite and avoid rate limits
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    // final readme update to catch any stragglers
+    generate_readme(output_dir);
+    if std::env::var("GITHUB_ACTIONS").is_ok() {
+        let _ = std::process::Command::new("git").args(["add", "."]).status();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "chore: final readme update [skip ci]"]).status();
+        let _ = std::process::Command::new("git").args(["push"]).status();
     }
 
     println!("\n=== done! downloaded: {}, failed: {} ===", total_downloaded, total_failed);
