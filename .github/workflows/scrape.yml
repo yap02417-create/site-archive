@@ -37,14 +37,11 @@ jobs:
       - name: Install dependencies for BoringSSL
         run: sudo apt-get update && sudo apt-get install -y cmake nasm clang
 
-      - name: Build and Run Scraper
-        run: |
-          cargo run --release --bin scrape
-        
-      - name: Commit and Push Changes
+      - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add wallpapersclan/
-          git commit -m "chore: archive new wallpapers [skip ci]" || echo "No changes to commit"
-          git push
+
+      - name: Build and Run Scraper
+        run: |
+          cargo run --release --bin scrape
