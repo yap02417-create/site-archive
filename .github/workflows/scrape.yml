@@ -1,0 +1,50 @@
+name: Daily Wallpaper Archive
+
+on:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight UTC
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+        
+      - name: Install dependencies for BoringSSL
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm clang
+
+      - name: Build and Run Scraper
+        run: |
+          cargo run --release --bin scrape
+        
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add wallpapersclan/
+          git commit -m "chore: archive new wallpapers [skip ci]" || echo "No changes to commit"
+          git push
