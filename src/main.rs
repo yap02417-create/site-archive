@@ -147,6 +147,13 @@ async fn main() {
         // small delay between pages to be polite
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
+    // final sort to keep readme alphabetical (matches old behavior)
+    sort_readme();
+    if std::env::var("GITHUB_ACTIONS").is_ok() {
+        let _ = std::process::Command::new("git").args(["add", "README.md", "wallpapersclan"]).status();
+        let _ = std::process::Command::new("git").args(["commit", "-m", "chore: sort readme alphabetically [skip ci]"]).status();
+        let _ = std::process::Command::new("git").args(["push"]).status();
+    }
 
     println!("\n=== done! downloaded: {}, failed: {} ===", total_downloaded, total_failed);
 }
@@ -180,4 +187,42 @@ fn append_to_readme(rows: &str) {
         let _ = file.write_all(rows.as_bytes());
         println!("appended {} new entries to README.md", rows.lines().count());
     }
+}
+
+/// sort the readme table rows alphabetically by title (keeps output identical to old regenerate behavior)
+fn sort_readme() {
+    let content = match std::fs::read_to_string("README.md") {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    // header is everything before the first table data row (lines starting with "| <img")
+    let mut header_lines = Vec::new();
+    let mut data_rows = Vec::new();
+
+    for line in &lines {
+        if line.starts_with("| <img") {
+            data_rows.push(*line);
+        } else {
+            if data_rows.is_empty() {
+                header_lines.push(*line);
+            }
+        }
+    }
+
+    // sort rows alphabetically (the title is the second column, but since the slug is in the url
+    // and entries have similar structure, sorting the whole line works the same)
+    data_rows.sort();
+
+    let mut output = header_lines.join("\n");
+    output.push('\n');
+    for row in &data_rows {
+        output.push_str(row);
+        output.push('\n');
+    }
+
+    let _ = std::fs::write("README.md", output);
+    println!("sorted readme: {} entries alphabetically", data_rows.len());
 }
