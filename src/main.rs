@@ -157,10 +157,10 @@ fn generate_readme(output_dir: &Path) {
         
         for item in items {
             let ext = if item.download_url.contains(".png") { "png" } else { "jpg" };
-            let img_path = format!("wallpapersclan/{}.{}", item.id, ext);
+            let cdn_url = format!("https://raw.githubusercontent.com/yap02417-create/site-archive/main/wallpapersclan/{}.{}", item.id, ext);
             let tags = item.tags.join(", ");
             readme_content.push_str(&format!("| <img src=\"{}\" width=\"200\"> | **{}**<br>[Download]({}) | {} |\n", 
-                img_path, item.title, img_path, tags));
+                cdn_url, item.title, cdn_url, tags));
         }
     }
     
