@@ -1,6 +1,9 @@
 mod wallpapersclan;
 
+use std::collections::HashSet;
 use std::path::Path;
+
+const CDN_BASE: &str = "https://raw.githubusercontent.com/yap02417-create/site-archive/main/wallpapersclan";
 
 #[tokio::main]
 async fn main() {
@@ -10,6 +13,16 @@ async fn main() {
     let output_dir = Path::new("wallpapersclan");
     if !output_dir.exists() {
         std::fs::create_dir_all(output_dir).expect("failed to create output dir");
+    }
+
+    // parse existing readme to get already-downloaded ids (avoids needing the actual image files)
+    let mut existing_ids = load_existing_ids();
+    println!("found {} already-archived wallpapers in README.md", existing_ids.len());
+
+    // ensure readme exists with header if it doesn't
+    if !Path::new("README.md").exists() {
+        let header = "# Wallpaper Archive\n\nAutomated archive of wallpapers to bypass Cloudflare and prevent dead links.\n\n## Gallery\n\n| Preview | Title | Tags |\n| --- | --- | --- |\n";
+        let _ = std::fs::write("README.md", header);
     }
 
     let mut total_downloaded = 0u32;
@@ -39,7 +52,7 @@ async fn main() {
 
         match result {
             Ok(items) => {
-                consecutive_errors = 0; // reset on success
+                consecutive_errors = 0;
 
                 if items.is_empty() {
                     println!("no more items found! reached the end at page {}.", page);
@@ -48,9 +61,17 @@ async fn main() {
 
                 println!("found {} items on page {}", items.len(), page);
                 let mut page_downloaded = 0;
+                let mut new_readme_rows = String::new();
 
                 for item in &items {
                     let slug = &item.id;
+
+                    // skip if already in readme (already archived)
+                    if existing_ids.contains(slug.as_str()) {
+                        println!("  [skip] {} (already archived)", slug);
+                        continue;
+                    }
+
                     let ext = if item.download_url.contains(".png") { "png" } else { "jpg" };
                     let filename = format!("{}.{}", slug, ext);
                     let filepath = output_dir.join(&filename);
@@ -61,23 +82,24 @@ async fn main() {
                         let _ = std::fs::write(&manifest_path, json);
                     }
 
-                    // skip if already downloaded
-                    if filepath.exists() {
-                        println!("  [skip] {} (already exists)", filename);
-                        continue;
-                    }
-
                     print!("  [dl] {} ... ", filename);
 
-                    // retry downloads too
-                    let mut dl_ok = false;
+                    // retry downloads
                     for dl_attempt in 1..=max_retries {
                         match wallpapersclan::download_wallpaper(&item.download_url, &filepath).await {
                             Ok(bytes) => {
                                 println!("ok ({} KB)", bytes / 1024);
                                 total_downloaded += 1;
                                 page_downloaded += 1;
-                                dl_ok = true;
+
+                                // build readme row and track this id
+                                let cdn_url = format!("{}/{}.{}", CDN_BASE, slug, ext);
+                                let tags = item.tags.join(", ");
+                                new_readme_rows.push_str(&format!(
+                                    "| <img src=\"{}\" width=\"200\"> | **{}**<br>[Download]({}) | {} |\n",
+                                    cdn_url, item.title, cdn_url, tags
+                                ));
+                                existing_ids.insert(slug.clone());
                                 break;
                             }
                             Err(e) => {
@@ -93,13 +115,13 @@ async fn main() {
                     }
                 }
 
-                // update readme and progressively commit after every page with new downloads
+                // append new rows to readme and commit
                 if page_downloaded > 0 {
-                    generate_readme(output_dir);
-                    
+                    append_to_readme(&new_readme_rows);
+
                     if std::env::var("GITHUB_ACTIONS").is_ok() {
                         println!("[ci] committing progress for page {}...", page);
-                        let _ = std::process::Command::new("git").args(["add", "."]).status();
+                        let _ = std::process::Command::new("git").args(["add", "README.md", "wallpapersclan"]).status();
                         let _ = std::process::Command::new("git")
                             .args(["commit", "-m", &format!("chore: archive page {} ({} new) [skip ci]", page, page_downloaded)])
                             .status();
@@ -110,60 +132,52 @@ async fn main() {
             Err(e) => {
                 consecutive_errors += 1;
                 println!("error scraping page {} after {} retries: {}", page, max_retries, e);
-                
+
                 if consecutive_errors >= 5 {
                     println!("too many consecutive failures ({}), halting.", consecutive_errors);
                     break;
                 }
-                
-                // skip this page and keep going
+
                 println!("skipping page {} and continuing...", page);
             }
         }
-        
-        page += 1;
-        
-        // small delay between pages to be polite and avoid rate limits
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
 
-    // final readme update to catch any stragglers
-    generate_readme(output_dir);
-    if std::env::var("GITHUB_ACTIONS").is_ok() {
-        let _ = std::process::Command::new("git").args(["add", "."]).status();
-        let _ = std::process::Command::new("git").args(["commit", "-m", "chore: final readme update [skip ci]"]).status();
-        let _ = std::process::Command::new("git").args(["push"]).status();
+        page += 1;
+
+        // small delay between pages to be polite
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
     println!("\n=== done! downloaded: {}, failed: {} ===", total_downloaded, total_failed);
 }
 
-fn generate_readme(output_dir: &Path) {
-    let mut readme_content = String::from("# Wallpaper Archive\n\nAutomated archive of wallpapers to bypass Cloudflare and prevent dead links.\n\n## Gallery\n\n| Preview | Title | Tags |\n| --- | --- | --- |\n");
-    
-    if let Ok(entries) = std::fs::read_dir(output_dir) {
-        let mut items = Vec::new();
-        for entry in entries.flatten() {
-            if entry.path().extension().map_or(false, |ext| ext == "json") {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(item) = serde_json::from_str::<wallpapersclan::WallpaperEntry>(&content) {
-                        items.push(item);
+/// parse readme.md to extract all wallpaper ids that are already archived
+fn load_existing_ids() -> HashSet<String> {
+    let mut ids = HashSet::new();
+    if let Ok(content) = std::fs::read_to_string("README.md") {
+        for line in content.lines() {
+            // each row has: /wallpapersclan/SLUG.ext in the cdn url
+            if let Some(start) = line.find("/wallpapersclan/") {
+                let after = &line[start + 16..]; // skip "/wallpapersclan/"
+                if let Some(dot) = after.find('.') {
+                    let slug = &after[..dot];
+                    if !slug.is_empty() {
+                        ids.insert(slug.to_string());
                     }
                 }
             }
         }
-        
-        items.sort_by(|a, b| a.title.cmp(&b.title));
-        
-        for item in items {
-            let ext = if item.download_url.contains(".png") { "png" } else { "jpg" };
-            let cdn_url = format!("https://raw.githubusercontent.com/yap02417-create/site-archive/main/wallpapersclan/{}.{}", item.id, ext);
-            let tags = item.tags.join(", ");
-            readme_content.push_str(&format!("| <img src=\"{}\" width=\"200\"> | **{}**<br>[Download]({}) | {} |\n", 
-                cdn_url, item.title, cdn_url, tags));
-        }
     }
-    
-    let _ = std::fs::write("README.md", readme_content);
-    println!("generated README.md with gallery index!");
+    ids
+}
+
+/// append new rows to the end of readme.md
+fn append_to_readme(rows: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    if let Ok(mut file) = OpenOptions::new().append(true).open("README.md") {
+        let _ = file.write_all(rows.as_bytes());
+        println!("appended {} new entries to README.md", rows.lines().count());
+    }
 }
