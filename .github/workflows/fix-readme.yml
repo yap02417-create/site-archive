@@ -15,6 +15,7 @@ jobs:
         with:
           sparse-checkout: |
             wallpapersclan/*.json
+            README.md
           sparse-checkout-cone-mode: false
 
       - name: Configure Git
@@ -95,5 +96,5 @@ jobs:
 
       - name: Commit and Push
         run: |
-          git add README.md
+          git add --sparse README.md
           git diff --cached --quiet && echo "no changes" || (git commit -m "fix: rebuild readme from verified images only [skip ci]" && git push)
