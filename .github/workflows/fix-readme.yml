@@ -10,11 +10,10 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (sparse - json manifests + readme)
+      - name: Checkout (sparse - readme only)
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
-            wallpapersclan/*.json
             README.md
           sparse-checkout-cone-mode: false
 
@@ -23,60 +22,25 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
 
-      - name: Get real image list
+      - name: Nuke README to header only
         run: |
-          git ls-tree -r --name-only HEAD wallpapersclan/ | grep -E '\.(jpg|png)$' | sort > /tmp/real_images.txt
-          echo "found $(wc -l < /tmp/real_images.txt) actual images in repo"
+          # wipe readme to just the table header so the scraper rebuilds it from scratch
+          cat > README.md << 'EOF'
+          # Wallpaper Archive
 
-      - name: Rebuild README
-        shell: python3 {0}
-        run: |
-          import json, os, subprocess
+          Automated archive of wallpapers to bypass Cloudflare and prevent dead links.
 
-          CDN = "https://raw.githubusercontent.com/yap02417-create/site-archive/main"
+          ## Gallery
 
-          with open("/tmp/real_images.txt") as f:
-              real_images = set(line.strip() for line in f if line.strip())
-
-          print(f"verified {len(real_images)} real images")
-
-          image_map = {}
-          for img in real_images:
-              slug = os.path.splitext(os.path.basename(img))[0]
-              image_map[slug] = img
-
-          rows = []
-          json_dir = "wallpapersclan"
-          if os.path.isdir(json_dir):
-              for fname in sorted(os.listdir(json_dir)):
-                  if not fname.endswith(".json"):
-                      continue
-                  slug = fname[:-5]
-                  if slug not in image_map:
-                      print(f"  [orphan] {slug}.json has no image, skipping")
-                      continue
-                  try:
-                      with open(os.path.join(json_dir, fname)) as f:
-                          data = json.load(f)
-                      title = data.get("title", slug)
-                      tags = ", ".join(data.get("tags", []))
-                      cdn_url = f"{CDN}/{image_map[slug]}"
-                      rows.append(f'| <img src="{cdn_url}" width="200"> | **{title}**<br>[Download]({cdn_url}) | {tags} |')
-                  except Exception as e:
-                      print(f"  [error] {fname}: {e}")
-
-          with open("README.md", "w") as f:
-              f.write("# Wallpaper Archive\n\n")
-              f.write("Automated archive of wallpapers to bypass Cloudflare and prevent dead links.\n\n")
-              f.write("## Gallery\n\n")
-              f.write("| Preview | Title | Tags |\n")
-              f.write("| --- | --- | --- |\n")
-              for row in rows:
-                  f.write(row + "\n")
-
-          print(f"wrote README.md with {len(rows)} verified entries")
+          | Preview | Title | Tags |
+          | --- | --- | --- |
+          EOF
+          # strip leading whitespace from heredoc
+          sed -i 's/^          //' README.md
+          echo "README.md reset to empty header"
+          cat README.md
 
       - name: Commit and Push
         run: |
           git add --sparse README.md
-          git diff --cached --quiet && echo "no changes" || (git commit -m "fix: rebuild readme from verified images only [skip ci]" && git push)
+          git diff --cached --quiet && echo "no changes" || (git commit -m "fix: nuke readme for full rescrape [skip ci]" && git push)
