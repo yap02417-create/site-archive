@@ -121,7 +121,7 @@ async fn main() {
 
                     if std::env::var("GITHUB_ACTIONS").is_ok() {
                         println!("[ci] committing progress for page {}...", page);
-                        let _ = std::process::Command::new("git").args(["add", "README.md", "wallpapersclan"]).status();
+                        let _ = std::process::Command::new("git").args(["add", "--sparse", "README.md", "wallpapersclan"]).status();
                         let _ = std::process::Command::new("git")
                             .args(["commit", "-m", &format!("chore: archive page {} ({} new) [skip ci]", page, page_downloaded)])
                             .status();
@@ -150,7 +150,7 @@ async fn main() {
     // final sort to keep readme alphabetical (matches old behavior)
     sort_readme();
     if std::env::var("GITHUB_ACTIONS").is_ok() {
-        let _ = std::process::Command::new("git").args(["add", "README.md", "wallpapersclan"]).status();
+        let _ = std::process::Command::new("git").args(["add", "--sparse", "README.md", "wallpapersclan"]).status();
         let _ = std::process::Command::new("git").args(["commit", "-m", "chore: sort readme alphabetically [skip ci]"]).status();
         let _ = std::process::Command::new("git").args(["push"]).status();
     }
